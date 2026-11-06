@@ -1,0 +1,47 @@
+name: Bangun aplikasi iPad (IPA)
+
+on:
+  workflow_dispatch:
+    inputs:
+      paket:
+        description: "Pengelola paket iOS. Biarkan spm; pilih cocoapods hanya bila build pertama gagal."
+        type: choice
+        default: spm
+        options: [spm, cocoapods]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      KASIR_IOS_PM: ${{ inputs.paket }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Siapkan proyek iOS
+        run: node setup.mjs ios
+
+      - name: Bangun (tanpa tanda tangan)
+        working-directory: ios/App
+        run: |
+          if [ -d App.xcworkspace ]; then TARGET="-workspace App.xcworkspace"; else TARGET="-project App.xcodeproj"; fi
+          xcodebuild $TARGET -scheme App -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+
+      - name: Kemas jadi Kasirku.ipa
+        run: |
+          APP=$(find ios/App/build/Build/Products -maxdepth 2 -name "App.app" | head -n 1)
+          echo "Ditemukan: $APP"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry Kasirku.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kasirku-IPA
+          path: Kasirku.ipa

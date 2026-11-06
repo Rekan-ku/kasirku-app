@@ -1,0 +1,7 @@
+{
+  "appId": "id.kasirku.app",
+  "appName": "Kasirku",
+  "webDir": "www",
+  "server": { "androidScheme": "https" },
+  "ios": { "contentInset": "always" }
+}
