@@ -9,6 +9,9 @@ on:
         default: spm
         options: [spm, cocoapods]
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-latest
@@ -40,6 +43,22 @@ jobs:
           mkdir -p Payload
           cp -R "$APP" Payload/
           zip -qry Kasirku.ipa Payload
+
+      - name: Periksa isi IPA
+        run: |
+          unzip -l Kasirku.ipa | grep -E "Info.plist|ble.js|public/index.html|Assets.car|AppIcon" | head -20 | while read l; do echo "::notice::$l"; done
+          P=Payload/App.app/Info.plist
+          for k in CFBundleIdentifier CFBundleDisplayName UIDeviceFamily MinimumOSVersion NSBluetoothAlwaysUsageDescription; do echo "::notice::$k=$(/usr/libexec/PlistBuddy -c "Print :$k" "$P" 2>&1 | tr '\n' ' ')"; done
+          echo "::notice::arsitektur $(lipo -archs Payload/App.app/App 2>&1)"
+          echo "::notice::ukuran $(ls -l Kasirku.ipa | awk '{print $5}') byte"
+
+      - name: Terbitkan sebagai Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "ipa-${{ github.run_number }}" Kasirku.ipa \
+            --title "Kasirku IPA #${{ github.run_number }}" \
+            --notes "File aplikasi iPad (belum ditandatangani). Pasang dengan Sideloadly."
 
       - uses: actions/upload-artifact@v4
         with:
