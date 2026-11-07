@@ -52,6 +52,7 @@ Aplikasi native memakai Bluetooth langsung, jadi **di iPad pun bisa** (berbeda d
 - Saat `node setup.mjs` dijalankan, ada langkah bundel Bluetooth (`esbuild`). Kalau langkah itu error, kirim pesannya ke saya.
 
 ## Penting
+- Penjelasan front end, back end, dan database ada di `ARSITEKTUR.md`.
 - **Data aplikasi native terpisah** dari data di Safari/Chrome (PWA). Untuk pindah: di versi lama *Atur > Cadangkan*, lalu di aplikasi baru *Atur > Pulihkan*.
 - Lisensi: masukkan kunci lagi di aplikasi baru. Masa percobaan 7 hari dihitung dari pertama aplikasi dibuka.
 - Setiap kali `src/index.html` diubah, jalankan lagi `node setup.mjs <android|ios>`.
@@ -60,3 +61,12 @@ Aplikasi native memakai Bluetooth langsung, jadi **di iPad pun bisa** (berbeda d
 
 ## Status pengujian (jujur)
 Logika di dalam aplikasi (simpan file lewat Bagikan, cetak lewat jembatan native, cetak Bluetooth lewat plugin tiruan, SW dimatikan di native) sudah diuji di browser dengan Capacitor tiruan. **Build Android/iOS sungguhan belum bisa saya jalankan** (tidak ada Android SDK/Mac di lingkungan saya) dan **belum dicoba dengan printer XP-58IIZ asli**. Bila langkah build error, kirim pesan error-nya ke saya.
+
+## Cadangan otomatis harian
+Di **Atur > Cadangan otomatis harian** (hanya pemilik):
+- Setiap hari, saat aplikasi pertama kali dipakai, Kasirku membuat satu salinan seluruh data (produk, stok, riwayat, pengaturan, akun) di dalam aplikasi. **7 hari terakhir** disimpan.
+- Tiap salinan bisa **Diunduh** atau **Dipulihkan**. Pulihkan butuh dua ketukan dan mengganti produk, stok, riwayat, dan pengaturan (akun tidak berubah). Data sebelum dipulihkan disimpan sebagai salinan pengaman.
+- Tombol **Cadangkan sekarang** menimpa salinan hari ini. Pilihan **Mati** menghentikan salinan otomatis.
+- Di **aplikasi native**, salinan juga ditulis ke folder **Kasirku** di aplikasi **Berkas** (Files), 14 hari terakhir. Di iOS: Berkas > Di iPad Saya > Kasirku. Di Android lokasinya bisa berbeda, dan bila gagal, panel menampilkan pesannya.
+- Perlu diingat: salinan ini ada di perangkat yang sama. **Bila aplikasi dihapus atau perangkat hilang, salinan ikut hilang.** Tetap simpan cadangan manual (tombol Unduh cadangan) di tempat lain, mis. iCloud Drive, Google Drive, atau komputer. File cadangan berisi akun (kata sandi dalam bentuk hash), jadi simpan di tempat pribadi.
+- Berkas harian bertambah besar mengikuti riwayat transaksi. Dengan puluhan ribu transaksi bisa mencapai beberapa MB per hari.

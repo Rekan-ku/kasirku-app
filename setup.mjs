@@ -186,12 +186,18 @@ class MainViewController: CAPBridgeViewController {
   }
   const pl = 'ios/App/App/Info.plist';
   let pt = fs.readFileSync(pl, 'utf8');
-  if (!pt.includes('NSBluetoothAlwaysUsageDescription')) {
+  const keys = [
+    ['NSBluetoothAlwaysUsageDescription', '<string>Kasirku memakai Bluetooth untuk mengirim struk ke printer.</string>'],
+    ['UIFileSharingEnabled', '<true/>'],               /* folder dokumen aplikasi terlihat di aplikasi Berkas (cadangan harian) */
+    ['LSSupportsOpeningDocumentsInPlace', '<true/>'],
+  ];
+  for (const [k, v] of keys) {
+    if (pt.includes('<key>' + k + '</key>')) continue;
     const i = pt.lastIndexOf('</dict>');
     if (i < 0) { console.error('Info.plist tidak dikenali'); process.exit(1); }
-    pt = pt.slice(0, i) + '\t<key>NSBluetoothAlwaysUsageDescription</key>\n\t<string>Kasirku memakai Bluetooth untuk mengirim struk ke printer.</string>\n' + pt.slice(i);
-    fs.writeFileSync(pl, pt);
+    pt = pt.slice(0, i) + '\t<key>' + k + '</key>\n\t' + v + '\n' + pt.slice(i);
   }
+  fs.writeFileSync(pl, pt);
   console.log('OK  iOS plugin cetak dan izin Bluetooth dipasang');
 }
 

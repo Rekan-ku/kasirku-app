@@ -306,10 +306,11 @@ let IDB=null;
 function open(){
   if(IDB)return IDB;
   IDB=new Promise((res,rej)=>{
-    const r=indexedDB.open('kasirku',2);
+    const r=indexedDB.open('kasirku',3);
     r.onupgradeneeded=()=>{
       const db=r.result;
       if(!db.objectStoreNames.contains('kv'))db.createObjectStore('kv');
+      if(!db.objectStoreNames.contains('autobak'))db.createObjectStore('autobak',{keyPath:'day'});
       if(!db.objectStoreNames.contains('sales')){const st=db.createObjectStore('sales',{keyPath:'id'});st.createIndex('ts','ts');st.createIndex('no','no');}
     };
     r.onsuccess=()=>{r.result.onversionchange=()=>{r.result.close();IDB=null;};res(r.result);};
@@ -659,9 +660,75 @@ function parseBackup(text){
 }
 async function saveSafety(){try{await kvPut('safety',{at:ms(),core:coreOf(),sales:await allSales()});}catch(e){}}
 
+/* ---------- cadangan otomatis harian (di perangkat ini) ----------
+   Satu salinan per hari disimpan di IndexedDB (7 hari terakhir, dikompres bila bisa).
+   Di aplikasi native, salinan juga ditulis ke Documents/Kasirku (terlihat di aplikasi Berkas). */
+const ABK_KEEP=7,ABK_FILES=14,ABK_DIR='Kasirku';
+const dayStr=()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');};
+const isNativeApp=()=>!!(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform());
+let abkFile=null;
+async function abkPack(s){
+  try{if(typeof CompressionStream!=='undefined'){const st=new Blob([s]).stream().pipeThrough(new CompressionStream('gzip'));return {gz:true,data:await new Response(st).arrayBuffer()};}}catch(e){}
+  return {gz:false,data:s};
+}
+async function abkUnpack(rec){
+  if(!rec.gz)return rec.data;
+  const st=new Blob([rec.data]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return new Response(st).text();
+}
+const abkIndex=async()=>(await kvGet('abkIndex'))||[];
+async function abkWriteFile(day,json){
+  if(!isNativeApp()){abkFile=null;return;}
+  try{
+    const FS=window.Capacitor.registerPlugin('Filesystem');
+    const name='kasirku-'+day+'.json';
+    await FS.writeFile({path:ABK_DIR+'/'+name,data:json,directory:'DOCUMENTS',encoding:'utf8',recursive:true});
+    abkFile={ok:true,name,at:ms()};
+    try{
+      const r=await FS.readdir({path:ABK_DIR,directory:'DOCUMENTS'});
+      const names=(r.files||[]).map(f=>f.name||f).filter(n=>/^kasirku-\d{4}-\d{2}-\d{2}\.json$/.test(n)).sort();
+      for(const n of names.slice(0,Math.max(0,names.length-ABK_FILES)))await FS.deleteFile({path:ABK_DIR+'/'+n,directory:'DOCUMENTS'});
+    }catch(e){}
+  }catch(e){abkFile={ok:false,msg:String((e&&e.message)||e),at:ms()};}
+}
+async function abkRun(force){
+  if(memOnly)throw new ApiError(500,'Penyimpanan di perangkat ini tidak aktif');
+  const day=dayStr();
+  if(!force&&(await abkIndex()).some(x=>x.day===day))return null;
+  const sales=await allSales();
+  const json=JSON.stringify({app:'kasirku',version:2,exportedAt:ms(),products:DB.products,sales,settings:DB.settings,users:DB.users,recovery:DB.meta.recovery});
+  const pk=await abkPack(json);
+  const meta={day,at:ms(),sales:sales.length,products:DB.products.length,size:json.length,gz:pk.gz};
+  const db=await open();
+  const t=db.transaction('autobak','readwrite');t.objectStore('autobak').put(Object.assign({data:pk.data},meta));await txDone(t);
+  let idx=(await abkIndex()).filter(x=>x.day!==day);idx.push(meta);idx.sort((a,b)=>a.day<b.day?1:-1);
+  const drop=idx.slice(ABK_KEEP);idx=idx.slice(0,ABK_KEEP);
+  if(drop.length){const t2=db.transaction('autobak','readwrite');drop.forEach(x=>t2.objectStore('autobak').delete(x.day));await txDone(t2);}
+  await kvPut('abkIndex',idx);
+  DB.meta.lastAuto=meta.at;await commit();
+  await abkWriteFile(day,json);
+  return meta;
+}
+let abkBusy=false,abkDone='';
+function abkTick(){
+  const day=dayStr();
+  if(abkBusy||abkDone===day||memOnly||!DB||DB.meta.autoOff||!DB.users.length)return;
+  abkBusy=true;
+  locked(async()=>{await fresh();await abkRun(false);abkDone=day;}).catch(()=>{}).then(()=>{abkBusy=false;});
+}
+async function abkInfo(){
+  return {enabled:!DB.meta.autoOff,keep:ABK_KEEP,fileKeep:ABK_FILES,native:isNativeApp(),list:await abkIndex(),file:abkFile,last:DB.meta.lastAuto||0};
+}
+async function abkGet(day){
+  const db=await open();const rec=await rq(db.transaction('autobak').objectStore('autobak').get(day));
+  if(!rec)throw new ApiError(404,'Cadangan harian itu tidak ditemukan');
+  return abkUnpack(rec);
+}
+
 /* ---------- router ---------- */
 async function handle(m,path,b,raw,tok,q){
   await fresh();
+  abkTick();
   const lic=await licenseInfo();
   if(m==='GET'&&path==='/api/license/status')return lic;
   if(m==='POST'&&path==='/api/license')return activateLicense(b);
@@ -752,6 +819,21 @@ async function handle(m,path,b,raw,tok,q){
     return out.reverse();
   }
   if(m==='GET'&&path==='/api/backup'){need('backup');return write(()=>backupJson(),false);}
+  if(path==='/api/autobackup'&&m==='GET'){need('backup');return abkInfo();}
+  if(path==='/api/autobackup'&&m==='PUT'){need('backup');return write(()=>{DB.meta.autoOff=!b.enabled;return {ok:true};},false);}
+  if(path==='/api/autobackup/run'&&m==='POST'){need('backup');return write(async()=>{const r=await abkRun(true);abkDone=dayStr();return {ok:true,day:r.day};},false);}
+  let ra=path.match(/^\/api\/autobackup\/(\d{4}-\d{2}-\d{2})$/);
+  if(m==='GET'&&ra){need('backup');return write(async()=>new Blob([await abkGet(ra[1])],{type:'application/json'}),false);}
+  ra=path.match(/^\/api\/autobackup\/(\d{4}-\d{2}-\d{2})\/restore$/);
+  if(m==='POST'&&ra){
+    need('backup');
+    const d=parseBackup(await abkGet(ra[1]));
+    return write(async()=>{
+      await saveSafety();
+      DB.products=d.products;pendingClear=true;d.sales.forEach(addSale);DB.settings=Object.assign({},DEFAULTS,d.settings||{});
+      return {ok:true,products:d.products.length,sales:d.sales.length};
+    });
+  }
   if(m==='POST'&&path==='/api/restore'){
     need('backup');
     const d=parseBackup(await raw.text());
@@ -1688,6 +1770,38 @@ function rangeSales(){
   const from=S.range==='today'?startOfDay(0):S.range==='7'?startOfDay(6):S.range==='30'?startOfDay(29):0;
   return Store.sales.filter(s=>s.ts>=from);
 }
+async function loadAutoBak(){
+  if(!can('backup'))return;
+  try{S.abk=await Store.api('GET','/api/autobackup');const bx=$('#abkBox');if(bx&&S.view==='set')bx.innerHTML=abkInner();}catch(e){}
+}
+function abkPanel(){return can('backup')?'<div class="panel form" id="abkBox">'+abkInner()+'</div>':'';}
+function abkInner(){
+  const a=S.abk;let h='<h2>Cadangan otomatis harian</h2>';
+  if(!a)return h+'<p class="hint" style="margin:0">Memuat…</p>';
+  h+='<p class="hint" style="margin:0">Satu salinan dibuat otomatis tiap hari saat aplikasi dibuka, dan '+a.keep+' hari terakhir disimpan di dalam aplikasi.'
+    +(a.native?' Salinan juga ditulis ke folder <b>Kasirku</b> di aplikasi Berkas (Files), '+a.fileKeep+' hari terakhir.':'')
+    +' Ini melindungi dari salah hapus atau salah pulihkan. Bila aplikasi dihapus atau perangkat hilang, salinan ini ikut hilang, jadi tetap simpan cadangan di luar perangkat.</p>';
+  h+='<div class="fgrid"><label class="f">Cadangan otomatis<select class="inp" id="abkOn"><option value="1"'+(a.enabled?' selected':'')+'>Aktif</option><option value="0"'+(a.enabled?'':' selected')+'>Mati</option></select></label></div>';
+  if(a.native&&a.file)h+=a.file.ok?'<p class="hint" style="margin:0">Berkas terakhir: <b>'+esc(a.file.name)+'</b> di Berkas &gt; Kasirku.</p>':'<p class="hint" style="margin:0"><b>Gagal menulis ke Berkas:</b> '+esc(a.file.msg)+'</p>';
+  h+=a.list.length?a.list.map(x=>'<div style="display:flex;gap:8px;align-items:center;padding:8px 0;border-top:1px solid var(--line)"><div style="flex:1;min-width:0"><b>'+esc(x.day)+'</b> <small>'+esc(fmtDate(x.at))+'</small><br><small>'+x.products+' produk, '+x.sales+' transaksi, '+Math.max(1,Math.round(x.size/1024))+' KB</small></div><button class="btn sm" data-act="abk-dl" data-day="'+esc(x.day)+'">Unduh</button><button class="btn sm danger" data-act="abk-restore" data-day="'+esc(x.day)+'">Pulihkan</button></div>').join(''):'<p class="hint" style="margin:0">Belum ada cadangan harian. Cadangan pertama dibuat otomatis saat aplikasi dibuka berikutnya, atau tekan tombol di bawah.</p>';
+  return h+'<div class="actions"><button class="btn" data-act="abk-run">Cadangkan sekarang</button></div>';
+}
+async function abkDownload(day){
+  try{const r=await fetch('/api/autobackup/'+day,{headers:Store.headers()});if(!r.ok)throw new Error('x');saveFile('kasirku-'+day+'.json',await r.blob(),'application/json');}
+  catch(e){toast('Gagal mengunduh cadangan');}
+}
+async function abkRestore(day){
+  try{
+    const d=await Store.api('POST','/api/autobackup/'+day+'/restore');
+    S.cart=[];S.saleId=null;S.discVal=0;S.paid=0;await Store.refresh();
+    toast('Data dikembalikan ke '+day+': '+d.products+' produk, '+d.sales+' transaksi');loadAutoBak();
+  }catch(e){toast(errMsg(e));}
+}
+document.addEventListener('change',async ev=>{
+  const t=ev.target;if(!t||t.id!=='abkOn')return;
+  try{await Store.api('PUT','/api/autobackup',{enabled:t.value==='1'});toast(t.value==='1'?'Cadangan otomatis aktif':'Cadangan otomatis dimatikan');}catch(e){toast(errMsg(e));}
+  loadAutoBak();
+});
 function backupBanner(){
   if(!can('backup')||!Store.sales.length)return '';
   const last=Store.lastBackup||0;
@@ -1764,6 +1878,7 @@ function viewSet(){
   if(can('backup')){
     const info='Semua data tersimpan di iPad ini dan tetap ada tanpa internet. Data tidak ikut ke iPad lain. Cadangan terakhir: '+(Store.lastBackup?fmtDate(Store.lastBackup):'belum pernah')+'. Simpan cadangan secara rutin: jika iPad rusak, hilang, atau ikon aplikasi terhapus, data hanya bisa kembali dari file cadangan. File cadangan memuat akun (kata sandi dalam bentuk hash), jadi simpan di tempat pribadi. Memulihkan dari sini mengganti produk, stok, riwayat, dan pengaturan; akun yang ada tidak berubah. Di iPad baru, pakai Pulihkan di layar pembuatan akun supaya akun ikut kembali.';
     h+='<div class="panel form"><h2>Cadangan data</h2><p class="hint" style="margin:0">'+info+'</p><div class="actions"><button class="btn" data-act="backup">Unduh cadangan</button><button class="btn" data-act="restore-pick">Pulihkan dari cadangan</button></div></div>';
+    h+=abkPanel();
   }
   return h+'</div>';
 }
@@ -1867,7 +1982,7 @@ function render(){
 async function onAct(act,el,ev){
   const id=el.dataset.id,v=el.dataset.v;
   switch(act){
-    case 'nav':S.view=v;S.cartOpen=false;if(v==='users')S.users=null;render();if(v==='users')loadUsers();if(v==='hist')loadReport();break;
+    case 'nav':S.view=v;S.cartOpen=false;if(v==='users')S.users=null;render();if(v==='users')loadUsers();if(v==='hist')loadReport();if(v==='set')loadAutoBak();break;
     case 'user-new':openUser(null);break;
     case 'user-edit':openUser(id);break;
     case 'user-pw':openUserPw(id);break;
@@ -1928,6 +2043,9 @@ async function onAct(act,el,ev){
     case 'print':doPrint();break;
     case 'retry':boot();break;
     case 'backup':backup();break;
+    case 'abk-run':{el.disabled=true;try{await Store.api('POST','/api/autobackup/run');toast('Cadangan harian dibuat');}catch(e){toast(errMsg(e));}loadAutoBak();break;}
+    case 'abk-dl':abkDownload(el.dataset.day);break;
+    case 'abk-restore':if(confirmTap(el,'Yakin ganti semua data?'))abkRestore(el.dataset.day);break;
     case 'restore-pick':{const i=$('#restoreFile');if(i)i.click();break;}
     case 'restore-go':doRestore(el);break;
     case 'copy-receipt':copyReceipt();break;
