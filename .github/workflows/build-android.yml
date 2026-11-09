@@ -1,0 +1,55 @@
+name: Bangun APK Android
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Siapkan proyek Android
+        run: node setup.mjs android
+
+      - name: Bangun APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Kemas jadi Kasirku.apk
+        run: |
+          APK=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          echo "Ditemukan: $APK"
+          cp "$APK" Kasirku.apk
+          echo "::notice::ukuran $(ls -l Kasirku.apk | awk '{print $5}') byte"
+          unzip -l Kasirku.apk | grep -E "assets/public/(index.html|ble.js)|classes.dex|AndroidManifest" | while read l; do echo "::notice::$l"; done
+
+      - name: Terbitkan sebagai Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "apk-${{ github.run_number }}" Kasirku.apk \
+            --title "Kasirku APK #${{ github.run_number }}" \
+            --notes "File aplikasi Android (APK). Izinkan pemasangan dari sumber ini di perangkat, lalu buka file ini."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kasirku-APK
+          path: Kasirku.apk

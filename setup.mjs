@@ -136,6 +136,10 @@ public class MainActivity extends BridgeActivity {
     fs.writeFileSync(mf, m);
   }
   console.log('OK  izin Bluetooth Android dipasang');
+  try { /* ikon aplikasi (adaptif) */
+    fs.cpSync('android-icons', 'android/app/src/main/res', { recursive: true });
+    console.log('OK  ikon Android dipasang');
+  } catch (e) { console.log('Peringatan: ikon bawaan dipakai (' + e.message + ')'); }
 } else {
   try { /* ikon aplikasi */
     const set = 'ios/App/App/Assets.xcassets/AppIcon.appiconset';
